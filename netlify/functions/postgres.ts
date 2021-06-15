@@ -39,6 +39,7 @@ const server = (postgres) => {
         constraints_by_column_name[column_name].push(row.constraint_type);
       });
 
+      await constraints_query.close();
 
       // Now look up the actual columns
       const statement = await postgres.prepare('select column_name, data_type, is_nullable, is_updatable from information_schema.columns where table_schema = $1 and table_name = $2')
@@ -74,6 +75,8 @@ const server = (postgres) => {
         };
       });
 
+      await statement.close();
+
       return { fields };
     },
 
@@ -98,15 +101,25 @@ const server = (postgres) => {
       const other_columns = schema.filter(v => !v.active_identifier).map(v => v.field.field_api_name);
       const all_columns = [key_column].concat(other_columns);
 
-      // WARNING: this is not sanitized against SQL injection - doesn't even do basic quote escaping
-      let query = `insert into ${qualified_table_name} (${all_columns.join(', ')}) values `;
-      const values = request.records.map(record => "(" + all_columns.map(column => "'" + record[column] + "'").join(',') + ")").join(",");
-      query += values
-      query += ` on conflict (${key_column}) do update set `
-      query += other_columns.map(column => `${column} = excluded.${column}`).join(",");
+      // WARNING: there's a risk of SQL injection in the table and column name
+      // quoting (or lack thereof) here
+      let query = `insert into ${qualified_table_name} (${all_columns.join(',')}) values (`;
+      query += all_columns.map((_, index) => `$${index + 1}`).join(',');
+      query += `) on conflict (${key_column}) do update set `
+      query += other_columns.map(column => `${column}=excluded.${column}`).join(",");
 
-      // TODO: send a nicer error message back to Census if we fail here
-      await postgres.query(query);
+      // Execute the prepared query once per record in a transaction
+      await postgres.startTransaction();
+      let statement = await postgres.prepare(query);
+      // TODO wrap in a transaction
+      const insert_promises = request.records.map(r => {
+        const params = all_columns.map(column => r[column]);
+        console.log({ params });
+        statement.execute({ params });
+      });
+      await Promise.all(insert_promises);
+      await postgres.commit();
+      await statement.close();
 
       const record_results = request.records.map(r => {
         return {
