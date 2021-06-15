@@ -1,10 +1,24 @@
 import { Handler } from "@netlify/functions";
 import { Request, Server } from "./protocol";
+import { Connection } from 'postgresql-client';
 
 const server : Server = {
   test_connection: async (request) => {
+    const connection = new Connection({
+      host: 'localhost',
+      port: 5432,
+      user: 'brad',
+      database: 'brad',
+    });
+
+    await connection.connect();
+
+    const result = await connection.query('select 1 as one');
+    const rows = result.rows;
+    await connection.close();
+
     return { success: true };
-  }
+  },
 };
 
 const handler: Handler = async (event, context) => {
