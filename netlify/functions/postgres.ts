@@ -27,8 +27,8 @@ const server = (postgres) => {
     list_fields: async (request) => {
       const [schema, table] = request.object.object_api_name.split(".");
 
-      const query = `select column_name, data_type, is_nullable, is_updatable from information_schema.columns where table_schema = '${schema}' and table_name = '${table}'`;
-      const result = await postgres.query(query, {objectRows: true});
+      const statement = await postgres.prepare('select column_name, data_type, is_nullable, is_updatable from information_schema.columns where table_schema = $1 and table_name = $2')
+      const result = await statement.execute({objectRows: true, params: [schema, table]});
 
       const fields = result.rows.map(row => {
         let field_type;
