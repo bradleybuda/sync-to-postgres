@@ -1,11 +1,11 @@
 import { Handler } from "@netlify/functions";
 import { Request, Server } from "./protocol";
-import { Connection } from 'postgresql-client';
+import { Connection } from "postgresql-client";
 
 const server = (postgres) => {
   return {
     test_connection: async (request) => {
-      const result = await postgres.query('select 1 as one');
+      const result = await postgres.query("select 1 as one");
       const rows = result.rows;
       return { success: true };
     },
@@ -15,30 +15,28 @@ const server = (postgres) => {
       console.log(result.rows);
       const objects = result.rows.map(cols => {
         const object_api_name = `${cols[0]}.${cols[1]}`;
-        return {object_api_name, label: object_api_name};
+        return { object_api_name, label: object_api_name };
       });
       return { objects };
     },
 
     supported_operations: async (request) => {
-      return {operations: ['insert', 'update', 'upsert']};
+      return { operations: ["upsert"] };
     },
 
     list_fields: async (request) => {
       const [schema, table] = request.object.object_api_name.split(".");
 
-      const query = `select column_name, data_type from information_schema.columns where table_schema = '${schema}' and table_name = '${table}'`;
-      const result = await postgres.query(query);
+      const query = `select column_name, data_type, is_nullable, is_updatable from information_schema.columns where table_schema = '${schema}' and table_name = '${table}'`;
+      const result = await postgres.query(query, {objectRows: true});
 
-      const fields = result.rows.map(cols => {
-        const [column_name, data_type] = cols;
-
+      const fields = result.rows.map(row => {
         let field_type;
-        if (data_type == 'character varying') {
+        if (row.data_type == 'character varying') {
           field_type = 'string';
-        } else if (data_type == 'integer') {
+        } else if (row.data_type == 'integer') {
           field_type = 'integer';
-        } else if (data_type == 'boolean') {
+        } else if (row.data_type == 'boolean') {
           field_type = 'boolean';
         } else {
           // TODO handle other postgres types
@@ -46,18 +44,18 @@ const server = (postgres) => {
         }
 
         return {
-          field_api_name: column_name,
-          label: column_name,
+          field_api_name: row.column_name,
+          label: row.column_name,
           identifier: true, // TODO depends on index
-          required: true, // TODO depends on index / constraints
-          createable: true,
-          updateable: true,
-          array: false,
+          required: (row.is_nullable !== 'YES'),
+          createable: true, // TODO not for autonumber / serial columns
+          updateable: (row.is_updatable === 'YES'),
+          array: false, // TODO check data types
           type: field_type,
         };
       });
 
-      return {fields};
+      return { fields };
     },
 
     get_sync_speed: async (request) => {
@@ -76,8 +74,9 @@ const server = (postgres) => {
 
       // NOTE: your table must have a unique constraint on the identifier column
       // in order for this upsert statement builder to work
-      const key_column = Object.values(sync_plan.schema).find(v => v.active_identifier).field.field_api_name;
-      const other_columns = Object.values(sync_plan.schema).filter(v => !v.active_identifier).map(v => v.field.field_api_name);
+      const schema = Object.values(sync_plan.schema);
+      const key_column = schema.find(v => v.active_identifier).field.field_api_name;
+      const other_columns = schema.filter(v => !v.active_identifier).map(v => v.field.field_api_name);
       const all_columns = [key_column].concat(other_columns);
 
       // WARNING: this is not sanitized against SQL injection - doesn't even do basic quote escaping
@@ -87,8 +86,7 @@ const server = (postgres) => {
       query += ` on conflict (${key_column}) do update set `
       query += other_columns.map(column => `${column} = excluded.${column}`).join(",");
 
-      // TODO: handle failure correctly (though Census will implicitly do the
-      // right thing if we throw an error here)
+      // TODO: send a nicer error message back to Census if we fail here
       await postgres.query(query);
 
       const record_results = request.records.map(r => {
@@ -107,13 +105,7 @@ const handler: Handler = async (event, context) => {
   const request = JSON.parse(event.body);
   const method = request.method;
 
-  const connection = new Connection({
-    host: 'localhost',
-    port: 5432,
-    user: 'brad',
-    database: 'brad',
-  });
-
+  const connection = new Connection();
   await connection.connect();
 
   try {
