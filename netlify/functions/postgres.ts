@@ -27,31 +27,50 @@ const server = (postgres) => {
     list_fields: async (request) => {
       const [schema, table] = request.object.object_api_name.split(".");
 
+      // Look up constraints (unique or primary key) for this table
+      // TODO: could probably combine this with the query below and have the DB do this join for us
+      const constraints_query = await postgres.prepare('select column_name, constraint_type from information_schema.constraint_column_usage natural join information_schema.table_constraints where table_schema = $1 and table_name = $2');
+      const constraints_by_column_name = {};
+      (await constraints_query.execute({objectRows: true, params: [schema, table]})).rows.forEach(row => {
+        const column_name = row.column_name;
+        if (!constraints_by_column_name[column_name]) {
+          constraints_by_column_name[column_name] = [];
+        }
+        constraints_by_column_name[column_name].push(row.constraint_type);
+      });
+
+
+      // Now look up the actual columns
       const statement = await postgres.prepare('select column_name, data_type, is_nullable, is_updatable from information_schema.columns where table_schema = $1 and table_name = $2')
       const result = await statement.execute({objectRows: true, params: [schema, table]});
 
       const fields = result.rows.map(row => {
-        let field_type;
+        let type;
         if (row.data_type == 'character varying') {
-          field_type = 'string';
+          type = 'string';
         } else if (row.data_type == 'integer') {
-          field_type = 'integer';
+          type = 'integer';
         } else if (row.data_type == 'boolean') {
-          field_type = 'boolean';
+          type = 'boolean';
         } else {
           // TODO handle other postgres types
-          field_type = 'string';
+          type = 'string';
         }
+
+        const constraints = constraints_by_column_name[row.column_name] || [];
+        const identifier = constraints.includes('UNIQUE') || constraints.includes('PRIMARY KEY');
+        const required = row.is_nullable !== 'YES';
+        const updateable = row.is_updatable === 'YES';
 
         return {
           field_api_name: row.column_name,
           label: row.column_name,
-          identifier: true, // TODO depends on index
-          required: (row.is_nullable !== 'YES'),
           createable: true, // TODO not for autonumber / serial columns
-          updateable: (row.is_updatable === 'YES'),
           array: false, // TODO check data types
-          type: field_type,
+          identifier,
+          required,
+          updateable,
+          type,
         };
       });
 
