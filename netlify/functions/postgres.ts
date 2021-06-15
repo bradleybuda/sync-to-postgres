@@ -28,9 +28,7 @@ const server = (postgres) => {
       const [schema, table] = request.object.object_api_name.split(".");
 
       const query = `select column_name, data_type from information_schema.columns where table_schema = '${schema}' and table_name = '${table}'`;
-      console.log({query});
       const result = await postgres.query(query);
-      console.log(result.rows);
 
       const fields = result.rows.map(cols => {
         const [column_name, data_type] = cols;
@@ -69,6 +67,39 @@ const server = (postgres) => {
         maximum_parallel_batches: 8,
       }
     },
+
+    sync_batch: async (request) => {
+      const sync_plan = request.sync_plan;
+      const qualified_table_name = sync_plan.object.object_api_name;
+
+      // TODO implement other operations - insert and update
+
+      // NOTE: your table must have a unique constraint on the identifier column
+      // in order for this upsert statement builder to work
+      const key_column = Object.values(sync_plan.schema).find(v => v.active_identifier).field.field_api_name;
+      const other_columns = Object.values(sync_plan.schema).filter(v => !v.active_identifier).map(v => v.field.field_api_name);
+      const all_columns = [key_column].concat(other_columns);
+
+      // WARNING: this is not sanitized against SQL injection - doesn't even do basic quote escaping
+      let query = `insert into ${qualified_table_name} (${all_columns.join(', ')}) values `;
+      const values = request.records.map(record => "(" + all_columns.map(column => "'" + record[column] + "'").join(',') + ")").join(",");
+      query += values
+      query += ` on conflict (${key_column}) do update set `
+      query += other_columns.map(column => `${column} = excluded.${column}`).join(",");
+
+      // TODO: handle failure correctly (though Census will implicitly do the
+      // right thing if we throw an error here)
+      await postgres.query(query);
+
+      const record_results = request.records.map(r => {
+        return {
+          success: true,
+          identifier: r[key_column],
+        }
+      });
+
+      return { record_results };
+    }
   } as Server;
 }
 
