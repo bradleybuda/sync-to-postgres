@@ -60,7 +60,15 @@ const server = (postgres) => {
       });
 
       return {fields};
-    }
+    },
+
+    get_sync_speed: async (request) => {
+      return {
+        maximum_batch_size: 1000,
+        maximum_records_per_second: 100000,
+        maximum_parallel_batches: 8,
+      }
+    },
   } as Server;
 }
 
